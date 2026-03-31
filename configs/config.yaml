@@ -1,0 +1,54 @@
+project:
+  name: "Prism"
+  description: "E-commerce Review Aspect-Based Sentiment Analysis Platform"
+
+data:
+  semeval_restaurant: "data/human_labeled/semeval_restaurant/"
+  semeval_laptop: "data/human_labeled/semeval_laptop/"
+  amazon_review: "data/raw/amazon_review/"
+  splits_dir: "data/splits/"
+  split_ratio: [0.7, 0.15, 0.15]  # train/val/test
+
+aspects:
+  restaurant: ["food", "service", "ambience", "price", "anecdotes/miscellaneous"]
+  laptop: ["battery", "screen", "speed", "design", "price", "software", "keyboard"]
+  general: ["quality", "price", "shipping", "packaging", "customer_service",
+            "durability", "appearance", "functionality"]
+
+sentiments: ["positive", "negative", "neutral"]
+
+llm:
+  provider: "anthropic"  # or "openai"
+  model_name: "claude-sonnet-4-20250514"
+  temperature: 0.7
+  num_runs: 3
+  batch_save_interval: 100
+
+training:
+  model_name: "microsoft/deberta-v3-base"
+  max_length: 256
+  batch_size: 16
+  learning_rate: 2e-5
+  classifier_lr: 5e-5
+  epochs: 10
+  alpha: 0.7  # human loss weight
+  warmup_ratio: 0.1
+  early_stopping_patience: 3
+  amp: true
+  amp_dtype: "bfloat16"
+  seed: 42
+
+soft_label:
+  temperature_sharpening: true
+  sharpening_T: 0.8
+  min_consistency: 2  # at least 2 out of N runs agree to keep
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  max_batch_size: 100
+  mini_batch_size: 64
+
+mlflow:
+  experiment_name: "prism-absa"
+  tracking_uri: "mlruns/"
