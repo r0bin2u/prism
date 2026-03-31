@@ -1,11 +1,3 @@
-"""
-Step 1: Download SemEval-2014 Task 4 data, parse XML, convert to JSONL,
-and produce stratified train/val/test splits.
-
-Usage:
-    python -m src.annotation.data_splitter --config configs/config.yaml
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -27,27 +19,19 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # two levels up from src/annotation/
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 SEMEVAL_URLS: dict[str, dict[str, str]] = {
     "semeval_restaurant": {
         "train": (
-            "https://raw.githubusercontent.com/peace195/"
-            "aspect-based-sentiment-analysis/master/data/Restaurants_Train.xml"
+            "https://raw.githubusercontent.com/davidsbatista/"
+            "Aspect-Based-Sentiment-Analysis/master/datasets/"
+            "ABSA-SemEval2014/Restaurants_Train_v2.xml"
         ),
         "test": (
-            "https://raw.githubusercontent.com/peace195/"
-            "aspect-based-sentiment-analysis/master/data/Restaurants_Test_Gold.xml"
-        ),
-    },
-    "semeval_laptop": {
-        "train": (
-            "https://raw.githubusercontent.com/peace195/"
-            "aspect-based-sentiment-analysis/master/data/Laptops_Train.xml"
-        ),
-        "test": (
-            "https://raw.githubusercontent.com/peace195/"
-            "aspect-based-sentiment-analysis/master/data/Laptops_Test_Gold.xml"
+            "https://raw.githubusercontent.com/davidsbatista/"
+            "Aspect-Based-Sentiment-Analysis/master/datasets/"
+            "ABSA-SemEval2014/Restaurants_Test_Data_phaseB.xml"
         ),
     },
 }
@@ -78,8 +62,8 @@ def _download_file(url: str, dest: Path) -> Path:
 
 
 def download_semeval_data(cache_dir: Path) -> dict[str, dict[str, Path]]:
-    """Download all SemEval-2014 XML files, returning paths grouped by dataset
-    and split (train / test)."""
+    """Download SemEval-2014 Restaurant XML files, returning paths grouped
+    by dataset and split (train / test)."""
     paths: dict[str, dict[str, Path]] = {}
     for dataset, splits in SEMEVAL_URLS.items():
         paths[dataset] = {}
@@ -92,28 +76,33 @@ def download_semeval_data(cache_dir: Path) -> dict[str, dict[str, Path]]:
 
 
 # ---------------------------------------------------------------------------
-# XML parsing
+# XML parsing (category-level)
 # ---------------------------------------------------------------------------
 
 
-def parse_semeval_xml(xml_path: Path, dataset: str) -> list[dict]:
-    """Parse a SemEval-2014 XML file into a list of review dicts.
+def parse_semeval_xml(
+    xml_path: Path,
+    dataset: str,
+    valid_aspects: set[str] | None = None,
+) -> list[dict]:
+    """Parse a SemEval-2014 XML file using aspectCategory annotations.
 
-    Each dict follows the unified format:
+    Each returned dict:
         {
             "review_id": str,
             "text": str,
             "dataset": str,
-            "aspects": [{"aspect": str, "sentiment": str, "span": str}, ...]
+            "aspects": [{"aspect": str, "sentiment": str}, ...]
         }
 
-    Aspect terms with polarity "conflict" are dropped.
+    - Only aspectCategory is used (not aspectTerm).
+    - polarity="conflict" is dropped.
+    - If *valid_aspects* is provided, categories not in the set are dropped.
     """
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    # Derive a short prefix for review IDs, e.g. "semeval_restaurant" -> "rest"
-    tag = dataset.split("_")[-1][:4]
+    tag = dataset.split("_")[-1][:4]  # "rest"
 
     reviews: list[dict] = []
     for idx, sentence in enumerate(root.iter("sentence"), start=1):
@@ -124,25 +113,20 @@ def parse_semeval_xml(xml_path: Path, dataset: str) -> list[dict]:
         text = text_el.text.strip()
         aspects: list[dict] = []
 
-        aspect_terms_el = sentence.find("aspectTerms")
-        if aspect_terms_el is not None:
-            for at in aspect_terms_el.findall("aspectTerm"):
-                polarity = at.get("polarity", "").lower()
-                if polarity == "conflict":
-                    continue
+        categories_el = sentence.find("aspectCategories")
+        if categories_el is not None:
+            for ac in categories_el.findall("aspectCategory"):
+                polarity = ac.get("polarity", "").lower()
                 if polarity not in VALID_SENTIMENTS:
                     continue
-                term = at.get("term", "")
-                aspects.append(
-                    {
-                        "aspect": term.lower(),
-                        "sentiment": polarity,
-                        "span": term,
-                    }
-                )
+                category = ac.get("category", "").lower()
+                if valid_aspects and category not in valid_aspects:
+                    logger.warning(
+                        "Unknown category '%s' in %s, skipping", category, xml_path.name
+                    )
+                    continue
+                aspects.append({"aspect": category, "sentiment": polarity})
 
-        # Keep the review even if it has no aspect terms (some sentences are
-        # aspect-free); downstream code can decide whether to filter them.
         reviews.append(
             {
                 "review_id": f"semeval_{tag}_{idx:04d}",
@@ -211,10 +195,9 @@ def stratified_split(
         stratify=strat_keys,
     )
 
-    # Second split: val vs test  (proportion of test within the temp set)
+    # Second split: val vs test
     test_relative = test_frac / val_test_frac
 
-    # Re-check for rare keys in the temp set
     temp_key_counts = Counter(temp_keys)
     temp_keys_safe = [
         k if temp_key_counts[k] >= 2 else "__rare__" for k in temp_keys
@@ -271,27 +254,27 @@ def print_summary(
 
     print(f"\nTotal reviews: {len(all_reviews)}")
 
-    # Per-dataset counts
     ds_counts = Counter(r["dataset"] for r in all_reviews)
     for ds, cnt in sorted(ds_counts.items()):
         print(f"  {ds}: {cnt}")
 
-    # Split sizes
     print(f"\nSplit sizes:")
     print(f"  train : {len(train)}")
     print(f"  val   : {len(val)}")
     print(f"  test  : {len(test)}")
 
-    # Aspect-sentiment distribution (across all reviews)
+    # Aspect category × sentiment distribution
     aspect_sent = Counter()
     for r in all_reviews:
         for a in r["aspects"]:
-            aspect_sent[(a["sentiment"],)] += 1
+            aspect_sent[(a["aspect"], a["sentiment"])] += 1
 
-    print(f"\nAspect-sentiment distribution (all data):")
-    for (sent,), cnt in sorted(aspect_sent.items(), key=lambda x: -x[1]):
-        print(f"  {sent}: {cnt}")
+    print(f"\nAspect category × sentiment distribution:")
+    for (aspect, sent), cnt in sorted(aspect_sent.items(), key=lambda x: -x[1]):
+        print(f"  {aspect:30s} {sent:10s} {cnt}")
 
+    total_annotations = sum(aspect_sent.values())
+    print(f"\nTotal annotations: {total_annotations}")
     print("=" * 60 + "\n")
 
 
@@ -311,25 +294,22 @@ def run(config_path: Path) -> None:
     cache_dir = PROJECT_ROOT / "data" / "human_labeled"
     splits_dir = PROJECT_ROOT / Path(config["data"]["splits_dir"])
     split_ratio: list[float] = config["data"]["split_ratio"]
-    valid_sentiments = set(config.get("sentiments", VALID_SENTIMENTS))
+
+    # Build valid aspect set from config for validation
+    valid_aspects: set[str] = set()
+    for aspect_list in config.get("aspects", {}).values():
+        valid_aspects.update(a.lower() for a in aspect_list)
 
     # 1. Download
-    print("Downloading SemEval-2014 data ...")
+    print("Downloading SemEval-2014 Restaurant data ...")
     xml_paths = download_semeval_data(cache_dir)
 
-    # 2. Parse
+    # 2. Parse (category-level)
     all_reviews: list[dict] = []
     for dataset, split_paths in xml_paths.items():
         for _split_name, xml_path in split_paths.items():
-            reviews = parse_semeval_xml(xml_path, dataset)
+            reviews = parse_semeval_xml(xml_path, dataset, valid_aspects)
             all_reviews.extend(reviews)
-
-    # Filter aspects to only valid sentiments (should already be handled,
-    # but this is a safety net).
-    for review in all_reviews:
-        review["aspects"] = [
-            a for a in review["aspects"] if a["sentiment"] in valid_sentiments
-        ]
 
     print(f"Parsed {len(all_reviews)} reviews total.")
 
@@ -361,7 +341,7 @@ def main() -> None:
     )
 
     parser = argparse.ArgumentParser(
-        description="Download, parse, and split SemEval-2014 Task 4 data.",
+        description="Download, parse, and split SemEval-2014 Task 4 Restaurant data.",
     )
     parser.add_argument(
         "--config",
