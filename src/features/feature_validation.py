@@ -293,6 +293,174 @@ def feature_importance(model_lr, aspect_list):
     return importance
 
 
+# -- Visualization (Morandi palette) --
+
+MORANDI = {
+    "sage":     "#A2A88F",
+    "dusty_rose": "#C9A9A6",
+    "slate":    "#8E9AAF",
+    "clay":     "#C4A882",
+    "lavender": "#B8B8D1",
+    "moss":     "#7D8570",
+    "blush":    "#D4B5B0",
+    "stone":    "#9B998D",
+    "mauve":    "#BFA5B8",
+    "sand":     "#C7BEA2",
+}
+
+
+def _setup_plot_style():
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({
+        "figure.facecolor": "#F5F2EE",
+        "axes.facecolor": "#F5F2EE",
+        "axes.edgecolor": "#9B998D",
+        "axes.labelcolor": "#4A4A4A",
+        "text.color": "#4A4A4A",
+        "xtick.color": "#6A6A6A",
+        "ytick.color": "#6A6A6A",
+        "grid.color": "#D5D0C8",
+        "grid.alpha": 0.7,
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.titleweight": "medium",
+    })
+
+
+def plot_experiment_comparison(results, output_dir):
+    import matplotlib.pyplot as plt
+    _setup_plot_style()
+
+    names = list(results.keys())
+    lr_aucs = [results[n]["lr"]["auc"] for n in names]
+    mlp_aucs = [results[n]["mlp"]["auc"] for n in names]
+
+    x = np.arange(len(names))
+    width = 0.32
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars1 = ax.bar(x - width/2, lr_aucs, width, label="Logistic Regression",
+                   color=MORANDI["sage"], edgecolor="white", linewidth=0.8)
+    bars2 = ax.bar(x + width/2, mlp_aucs, width, label="MLP",
+                   color=MORANDI["dusty_rose"], edgecolor="white", linewidth=0.8)
+
+    # value labels on bars
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            h = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, h + 0.003,
+                    f"{h:.3f}", ha="center", va="bottom", fontsize=9, color="#4A4A4A")
+
+    ax.set_ylabel("AUC-ROC")
+    ax.set_title("Feature Ablation: Aspect Features Improve Prediction")
+    ax.set_xticks(x)
+    short_names = ["Baseline", "+ Aspect", "+ Aspect + Cross"]
+    ax.set_xticklabels(short_names[:len(names)])
+    ax.legend(frameon=False)
+    ax.set_ylim(min(lr_aucs + mlp_aucs) - 0.05, max(lr_aucs + mlp_aucs) + 0.05)
+    ax.grid(axis="y", linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    path = Path(output_dir) / "experiment_comparison.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved %s", path)
+
+
+def plot_cold_start(cold_results, output_dir):
+    import matplotlib.pyplot as plt
+    _setup_plot_style()
+
+    buckets = []
+    auc_a = []
+    auc_b = []
+    for name, info in cold_results.items():
+        if info.get("auc_A") is not None:
+            buckets.append(name)
+            auc_a.append(info["auc_A"])
+            auc_b.append(info["auc_B"])
+
+    if not buckets:
+        return
+
+    x = np.arange(len(buckets))
+    width = 0.32
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars1 = ax.bar(x - width/2, auc_a, width, label="Baseline (no aspect)",
+                   color=MORANDI["stone"], edgecolor="white", linewidth=0.8)
+    bars2 = ax.bar(x + width/2, auc_b, width, label="+ Aspect features",
+                   color=MORANDI["slate"], edgecolor="white", linewidth=0.8)
+
+    # lift annotations
+    for i in range(len(buckets)):
+        lift = auc_b[i] - auc_a[i]
+        mid_x = x[i] + width/2
+        ax.annotate(f"+{lift:.3f}", xy=(mid_x, auc_b[i]),
+                    xytext=(mid_x + 0.15, auc_b[i] + 0.015),
+                    fontsize=9, color=MORANDI["moss"], fontweight="bold",
+                    arrowprops=dict(arrowstyle="-", color=MORANDI["moss"], lw=0.8))
+
+    ax.set_ylabel("AUC-ROC")
+    ax.set_title("Cold-Start Analysis: Aspect Features Help Most with Few Reviews")
+    ax.set_xticks(x)
+    ax.set_xticklabels(buckets)
+    ax.legend(frameon=False)
+    ax.set_ylim(min(auc_a + auc_b) - 0.05, max(auc_a + auc_b) + 0.06)
+    ax.grid(axis="y", linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    path = Path(output_dir) / "cold_start_analysis.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved %s", path)
+
+
+def plot_feature_importance(importance, output_dir, top_k=10):
+    import matplotlib.pyplot as plt
+    _setup_plot_style()
+
+    items = list(importance.items())[:top_k]
+    items.reverse()  # so highest importance is at top of horizontal bar chart
+
+    names = [name for name, _ in items]
+    values = [val for _, val in items]
+    colors = [MORANDI["sage"] if v >= 0 else MORANDI["dusty_rose"] for v in values]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bars = ax.barh(names, values, color=colors, edgecolor="white", linewidth=0.8, height=0.6)
+
+    # value labels
+    for bar, val in zip(bars, values):
+        offset = 0.005 if val >= 0 else -0.005
+        ha = "left" if val >= 0 else "right"
+        ax.text(val + offset, bar.get_y() + bar.get_height()/2,
+                f"{val:+.4f}", ha=ha, va="center", fontsize=9, color="#4A4A4A")
+
+    ax.axvline(x=0, color=MORANDI["stone"], linewidth=0.8)
+    ax.set_xlabel("LR Coefficient (standardized)")
+    ax.set_title("Top Feature Importance: Which Aspects Drive Predictions")
+    ax.grid(axis="x", linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    path = Path(output_dir) / "feature_importance.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved %s", path)
+
+
+def generate_all_plots(results, cold_results, importance, output_dir):
+    plot_experiment_comparison(results, output_dir)
+    plot_cold_start(cold_results, output_dir)
+    plot_feature_importance(importance, output_dir)
+
+
 # -- Main --
 
 def run(amazon_data_path, checkpoint_path, config_path, output_dir, max_reviews=50000):
@@ -378,6 +546,9 @@ def run(amazon_data_path, checkpoint_path, config_path, output_dir, max_reviews=
     }
     with open(output_dir / "feature_validation.json", "w") as f:
         json.dump(full_results, f, indent=2)
+
+    # generate plots
+    generate_all_plots(results, cold_results, importance, output_dir)
 
     # print
     print(f"\n{'='*65}")
