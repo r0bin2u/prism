@@ -268,6 +268,95 @@ def cold_start_analysis(test_interactions, product_reviews_map, user_reviews_map
     return results
 
 
+def learning_curve_by_review_count(test_interactions, product_reviews_map, user_reviews_map,
+                                   aspect_list, model_A, scaler_A, model_B, scaler_B):
+    """Compute AUC at increasing review-count thresholds.
+    For threshold K, only include test samples where the product has <= K reviews."""
+    thresholds = [1, 2, 3, 5, 8, 12, 20, 30, 50, 100]
+    curve = []
+
+    for k in thresholds:
+        subset = [(uid, pid, r, ts, idx) for uid, pid, r, ts, idx in test_interactions
+                  if len(product_reviews_map.get(pid, [])) <= k]
+
+        if len(subset) < 30:
+            continue
+
+        X_A, y_A = build_features(subset, product_reviews_map, user_reviews_map, aspect_list, "A")
+        X_B, y_B = build_features(subset, product_reviews_map, user_reviews_map, aspect_list, "B")
+
+        if len(set(y_A)) < 2:
+            continue
+
+        prob_A = model_A.predict_proba(scaler_A.transform(X_A))[:, 1]
+        prob_B = model_B.predict_proba(scaler_B.transform(X_B))[:, 1]
+
+        curve.append({
+            "max_reviews": k,
+            "n": len(subset),
+            "auc_A": round(roc_auc_score(y_A, prob_A), 4),
+            "auc_B": round(roc_auc_score(y_B, prob_B), 4),
+        })
+
+    return curve
+
+
+def simulated_cold_start(test_interactions, enriched_reviews, product_reviews_map,
+                         user_reviews_map, aspect_list, model_A, scaler_A, model_B, scaler_B,
+                         min_product_reviews=50):
+    """For products with many reviews, artificially truncate to K reviews and measure AUC.
+    This controls for product differences — same products, different info available."""
+    truncation_points = [1, 3, 5, 10, 20, 50]
+
+    # find test interactions where product has >= min_product_reviews
+    eligible = [(uid, pid, r, ts, idx) for uid, pid, r, ts, idx in test_interactions
+                if len(product_reviews_map.get(pid, [])) >= min_product_reviews]
+
+    if len(eligible) < 30:
+        return []
+
+    curve = []
+    for k in truncation_points:
+        # build truncated product review map: only keep first K reviews per product (by timestamp)
+        truncated_map = {}
+        for pid, reviews in product_reviews_map.items():
+            sorted_reviews = sorted(reviews, key=lambda r: r.get("timestamp", 0))
+            truncated_map[pid] = sorted_reviews[:k]
+
+        X_A, y_A = build_features(eligible, truncated_map, user_reviews_map, aspect_list, "A")
+        X_B, y_B = build_features(eligible, truncated_map, user_reviews_map, aspect_list, "B")
+
+        if len(set(y_A)) < 2:
+            continue
+
+        prob_A = model_A.predict_proba(scaler_A.transform(X_A))[:, 1]
+        prob_B = model_B.predict_proba(scaler_B.transform(X_B))[:, 1]
+
+        curve.append({
+            "k_reviews": k,
+            "n": len(eligible),
+            "auc_A": round(roc_auc_score(y_A, prob_A), 4),
+            "auc_B": round(roc_auc_score(y_B, prob_B), 4),
+            "lift": round(roc_auc_score(y_B, prob_B) - roc_auc_score(y_A, prob_A), 4),
+        })
+
+    # also run with full reviews for comparison
+    X_A_full, y_A_full = build_features(eligible, product_reviews_map, user_reviews_map, aspect_list, "A")
+    X_B_full, y_B_full = build_features(eligible, product_reviews_map, user_reviews_map, aspect_list, "B")
+    if len(set(y_A_full)) >= 2:
+        curve.append({
+            "k_reviews": "all",
+            "n": len(eligible),
+            "auc_A": round(roc_auc_score(y_A_full, model_A.predict_proba(scaler_A.transform(X_A_full))[:, 1]), 4),
+            "auc_B": round(roc_auc_score(y_B_full, model_B.predict_proba(scaler_B.transform(X_B_full))[:, 1]), 4),
+            "lift": round(
+                roc_auc_score(y_B_full, model_B.predict_proba(scaler_B.transform(X_B_full))[:, 1])
+                - roc_auc_score(y_A_full, model_A.predict_proba(scaler_A.transform(X_A_full))[:, 1]), 4),
+        })
+
+    return curve
+
+
 def feature_importance(model_lr, aspect_list):
     """Extract LR coefficients as feature importance."""
     if not hasattr(model_lr, "coef_"):
@@ -455,10 +544,93 @@ def plot_feature_importance(importance, output_dir, top_k=10):
     logger.info("Saved %s", path)
 
 
-def generate_all_plots(results, cold_results, importance, output_dir):
+def plot_learning_curve(curve_data, output_dir):
+    import matplotlib.pyplot as plt
+    _setup_plot_style()
+
+    if not curve_data:
+        return
+
+    ks = [d["max_reviews"] for d in curve_data]
+    auc_a = [d["auc_A"] for d in curve_data]
+    auc_b = [d["auc_B"] for d in curve_data]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(ks, auc_a, "o-", color=MORANDI["stone"], label="Baseline", linewidth=2, markersize=6)
+    ax.plot(ks, auc_b, "s-", color=MORANDI["sage"], label="+ Aspect features", linewidth=2, markersize=6)
+
+    # shade the gap
+    ax.fill_between(ks, auc_a, auc_b, alpha=0.15, color=MORANDI["sage"])
+
+    ax.set_xlabel("Max product review count (≤ K)")
+    ax.set_ylabel("AUC-ROC")
+    ax.set_title("Learning Curve: Aspect Feature Advantage Shrinks with More Reviews")
+    ax.legend(frameon=False)
+    ax.grid(axis="y", linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    path = Path(output_dir) / "learning_curve.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved %s", path)
+
+
+def plot_simulated_cold_start(sim_data, output_dir):
+    import matplotlib.pyplot as plt
+    _setup_plot_style()
+
+    if not sim_data:
+        return
+
+    # separate numeric and "all" points
+    numeric = [d for d in sim_data if isinstance(d["k_reviews"], int)]
+    full = [d for d in sim_data if d["k_reviews"] == "all"]
+
+    if not numeric:
+        return
+
+    ks = [d["k_reviews"] for d in numeric]
+    auc_a = [d["auc_A"] for d in numeric]
+    auc_b = [d["auc_B"] for d in numeric]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(ks, auc_a, "o-", color=MORANDI["stone"], label="Baseline", linewidth=2, markersize=6)
+    ax.plot(ks, auc_b, "s-", color=MORANDI["slate"], label="+ Aspect features", linewidth=2, markersize=6)
+
+    # show "all reviews" as dashed horizontal lines
+    if full:
+        ax.axhline(y=full[0]["auc_A"], color=MORANDI["stone"], linestyle="--", alpha=0.5)
+        ax.axhline(y=full[0]["auc_B"], color=MORANDI["slate"], linestyle="--", alpha=0.5)
+        ax.text(ks[-1] * 1.05, full[0]["auc_B"] + 0.003, "all reviews", fontsize=8, color=MORANDI["slate"])
+
+    ax.fill_between(ks, auc_a, auc_b, alpha=0.15, color=MORANDI["slate"])
+
+    ax.set_xlabel("Number of reviews available per product (truncated)")
+    ax.set_ylabel("AUC-ROC")
+    ax.set_title("Simulated Cold-Start: Same Products, Varying Information")
+    ax.legend(frameon=False)
+    ax.grid(axis="y", linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    path = Path(output_dir) / "simulated_cold_start.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved %s", path)
+
+
+def generate_all_plots(results, cold_results, importance, output_dir,
+                       learning_curve_data=None, simulated_data=None):
     plot_experiment_comparison(results, output_dir)
     plot_cold_start(cold_results, output_dir)
     plot_feature_importance(importance, output_dir)
+    if learning_curve_data:
+        plot_learning_curve(learning_curve_data, output_dir)
+    if simulated_data:
+        plot_simulated_cold_start(simulated_data, output_dir)
 
 
 # -- Main --
@@ -532,6 +704,18 @@ def run(amazon_data_path, checkpoint_path, config_path, output_dir, max_reviews=
         models["A"], scalers["A"], models["B"], scalers["B"],
     )
 
+    # learning curve: AUC vs max review count
+    lc_data = learning_curve_by_review_count(
+        test_int, train_pr, train_ur, aspect_list,
+        models["A"], scalers["A"], models["B"], scalers["B"],
+    )
+
+    # simulated cold start: truncate hot products
+    sim_data = simulated_cold_start(
+        test_int, data["enriched"], train_pr, train_ur, aspect_list,
+        models["A"], scalers["A"], models["B"], scalers["B"],
+    )
+
     # feature importance from LR model B
     importance = feature_importance(models["B"], aspect_list)
 
@@ -542,13 +726,15 @@ def run(amazon_data_path, checkpoint_path, config_path, output_dir, max_reviews=
     full_results = {
         "experiments": results,
         "cold_start": cold_results,
+        "learning_curve": lc_data,
+        "simulated_cold_start": sim_data,
         "feature_importance": importance,
     }
     with open(output_dir / "feature_validation.json", "w") as f:
         json.dump(full_results, f, indent=2)
 
     # generate plots
-    generate_all_plots(results, cold_results, importance, output_dir)
+    generate_all_plots(results, cold_results, importance, output_dir, lc_data, sim_data)
 
     # print
     print(f"\n{'='*65}")
@@ -569,6 +755,21 @@ def run(amazon_data_path, checkpoint_path, config_path, output_dir, max_reviews=
             print(f"  {bucket:<20s} {info['n']:>6d} {info['auc_A']:>10.4f} {info['auc_B']:>10.4f} {info['lift']:>+8.4f}")
         else:
             print(f"  {bucket:<20s} {info['n']:>6d} {'N/A':>10s} {'N/A':>10s} {'N/A':>8s}")
+
+    if lc_data:
+        print(f"\n  Learning Curve (AUC vs max review count):")
+        print(f"  {'≤K reviews':>12s} {'n':>6s} {'Baseline':>10s} {'+ Aspect':>10s} {'Gap':>8s}")
+        print(f"  {'-'*48}")
+        for d in lc_data:
+            gap = d["auc_B"] - d["auc_A"]
+            print(f"  {'≤'+str(d['max_reviews']):>12s} {d['n']:>6d} {d['auc_A']:>10.4f} {d['auc_B']:>10.4f} {gap:>+8.4f}")
+
+    if sim_data:
+        print(f"\n  Simulated Cold-Start (hot products truncated):")
+        print(f"  {'K reviews':>12s} {'n':>6s} {'Baseline':>10s} {'+ Aspect':>10s} {'Lift':>8s}")
+        print(f"  {'-'*48}")
+        for d in sim_data:
+            print(f"  {str(d['k_reviews']):>12s} {d['n']:>6d} {d['auc_A']:>10.4f} {d['auc_B']:>10.4f} {d['lift']:>+8.4f}")
 
     print(f"\n  Top 10 Feature Importance (LR coefficients):")
     for i, (feat, coef) in enumerate(list(importance.items())[:10]):
