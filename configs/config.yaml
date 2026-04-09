@@ -48,6 +48,9 @@ api:
   port: 8000
   max_batch_size: 100
   mini_batch_size: 64
+  monitor_maxlen: 1000
+  monitor_recent_window: 100
+  monitor_drift_threshold: 0.15
 
 mlflow:
   experiment_name: "prism-absa"
