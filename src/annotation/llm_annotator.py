@@ -1,11 +1,11 @@
 """
-LLM offline annotation for Amazon reviews.
-Each review gets N annotation runs (default 3) at temperature=0.7.
-Supports Anthropic Claude and OpenAI GPT, switchable via config.
+LLM offline annotation for reviews.
+Each review gets N annotation runs with per-run provider/model config.
+Supports Google Gemini and Groq (Llama), switchable per run via config.
 
 Usage:
     python -m src.annotation.llm_annotator \
-        --input data/raw/amazon_reviews.jsonl \
+        --input data/splits/train.jsonl \
         --output data/llm_labeled/ \
         --config configs/config.yaml
 """
@@ -56,18 +56,33 @@ If no aspect is mentioned, output: []"""
 
 # -- LLM API calls --
 
-def call_anthropic(client, model, system, user, temperature):
-    resp = client.messages.create(
-        model=model,
-        max_tokens=512,
-        temperature=temperature,
-        system=system,
-        messages=[{"role": "user", "content": user}],
+class GeminiKeyRotator:
+    def __init__(self):
+        import os
+        raw = os.environ.get("GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEY", ""))
+        self.keys = [k.strip() for k in raw.split(",") if k.strip()]
+        if not self.keys:
+            raise ValueError("Set GEMINI_API_KEYS (comma-separated) or GEMINI_API_KEY env var")
+        self._idx = 0
+
+    def next_key(self):
+        key = self.keys[self._idx % len(self.keys)]
+        self._idx += 1
+        return key
+
+
+def call_gemini(client, model, system, user, temperature):
+    import google.generativeai as genai
+    genai.configure(api_key=client.next_key())
+    m = genai.GenerativeModel(model, system_instruction=system)
+    resp = m.generate_content(
+        user,
+        generation_config={"temperature": temperature, "max_output_tokens": 512},
     )
-    return resp.content[0].text
+    return resp.text
 
 
-def call_openai(client, model, system, user, temperature):
+def call_groq(client, model, system, user, temperature):
     resp = client.chat.completions.create(
         model=model,
         max_tokens=512,
@@ -81,12 +96,11 @@ def call_openai(client, model, system, user, temperature):
 
 
 def make_client(provider):
-    if provider == "anthropic":
-        import anthropic
-        return anthropic.Anthropic(), call_anthropic
-    elif provider == "openai":
-        import openai
-        return openai.OpenAI(), call_openai
+    if provider == "gemini":
+        return GeminiKeyRotator(), call_gemini
+    elif provider == "groq":
+        from groq import Groq
+        return Groq(), call_groq
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -94,7 +108,6 @@ def make_client(provider):
 # -- JSON parsing --
 
 def parse_llm_response(raw: str, valid_aspects: set, valid_sentiments: set):
-    """Try to extract JSON array from LLM response. Returns (parsed_list, success)."""
     text = raw.strip()
 
     # strip markdown code fences
@@ -138,23 +151,25 @@ def call_with_retry(fn, client, model, system, user, temperature, max_retries=3)
             if attempt == max_retries:
                 logger.error("Failed after %d retries: %s", max_retries, e)
                 return None
-            wait = 2 ** attempt  # 1s, 2s, 4s
+            wait = 2 ** attempt
             logger.warning("Retry %d/%d after %ds: %s", attempt + 1, max_retries, wait, e)
             time.sleep(wait)
 
 
 # -- Core annotation --
 
-def annotate_one_review(review_text, aspect_list, client, call_fn, model, temperature, num_runs, valid_aspects, valid_sentiments):
+def annotate_one_review(review_text, aspect_list, run_configs, temperature, valid_aspects, valid_sentiments):
     system = SYSTEM_PROMPT.format(aspect_list=", ".join(aspect_list))
     user = USER_PROMPT.format(review_text=review_text)
 
     annotations = []
-    for run_id in range(num_runs):
-        raw = call_with_retry(call_fn, client, model, system, user, temperature)
+    for run_id, rc in enumerate(run_configs):
+        raw = call_with_retry(rc["call_fn"], rc["client"], rc["model_name"], system, user, temperature)
         if raw is None:
             annotations.append({
                 "run_id": run_id,
+                "provider": rc["provider"],
+                "model": rc["model_name"],
                 "raw_response": "",
                 "parsed": [],
                 "parse_success": False,
@@ -163,13 +178,15 @@ def annotate_one_review(review_text, aspect_list, client, call_fn, model, temper
             parsed, success = parse_llm_response(raw, valid_aspects, valid_sentiments)
             annotations.append({
                 "run_id": run_id,
+                "provider": rc["provider"],
+                "model": rc["model_name"],
                 "raw_response": raw,
                 "parsed": parsed,
                 "parse_success": success,
             })
 
-        if run_id < num_runs - 1:
-            time.sleep(0.5)
+        if run_id < len(run_configs) - 1:
+            time.sleep(rc.get("sleep", 4))
 
     return annotations
 
@@ -190,22 +207,29 @@ def load_processed_ids(output_file: Path) -> set:
 
 # -- Main --
 
-def run(input_path: Path, output_dir: Path, config_path: Path):
+def run(input_path: Path, output_dir: Path, config_path: Path, max_reviews: int = 0):
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
     llm_cfg = config["llm"]
-    provider = llm_cfg["provider"]
-    model = llm_cfg["model_name"]
     temperature = llm_cfg["temperature"]
-    num_runs = llm_cfg["num_runs"]
     save_interval = llm_cfg["batch_save_interval"]
 
-    aspect_list = config["aspects"]["general"]
+    # build per-run configs
+    run_configs = []
+    for r in llm_cfg["runs"]:
+        client, call_fn = make_client(r["provider"])
+        run_configs.append({
+            "provider": r["provider"],
+            "model_name": r["model_name"],
+            "client": client,
+            "call_fn": call_fn,
+            "sleep": r.get("sleep_seconds", 4),
+        })
+
+    aspect_list = config["aspects"]["restaurant"]
     valid_aspects = set(a.lower() for a in aspect_list)
     valid_sentiments = set(config["sentiments"])
-
-    client, call_fn = make_client(provider)
 
     # load input reviews
     reviews = []
@@ -226,6 +250,7 @@ def run(input_path: Path, output_dir: Path, config_path: Path):
 
     # stats
     total_done = len(processed_ids)
+    new_done = 0
     total_parse_success = 0
     total_parse_attempts = 0
     aspect_counter = {}
@@ -237,8 +262,7 @@ def run(input_path: Path, output_dir: Path, config_path: Path):
 
         text = review.get("text", "")
         annotations = annotate_one_review(
-            text, aspect_list, client, call_fn, model,
-            temperature, num_runs, valid_aspects, valid_sentiments,
+            text, aspect_list, run_configs, temperature, valid_aspects, valid_sentiments,
         )
 
         record = {
@@ -247,12 +271,11 @@ def run(input_path: Path, output_dir: Path, config_path: Path):
             "llm_annotations": annotations,
         }
 
-        # append to file immediately
         with open(output_file, "a") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-        # update stats
         total_done += 1
+        new_done += 1
         for ann in annotations:
             total_parse_attempts += 1
             if ann["parse_success"]:
@@ -261,7 +284,6 @@ def run(input_path: Path, output_dir: Path, config_path: Path):
                 asp = item["aspect"]
                 aspect_counter[asp] = aspect_counter.get(asp, 0) + 1
 
-        # progress log
         if total_done % save_interval == 0:
             rate = total_parse_success / max(total_parse_attempts, 1) * 100
             logger.info(
@@ -269,7 +291,12 @@ def run(input_path: Path, output_dir: Path, config_path: Path):
                 total_done, len(reviews), rate,
             )
 
-        time.sleep(0.5)  # rate limiting between reviews
+        if max_reviews and new_done >= max_reviews:
+            logger.info("Reached --max-reviews %d, stopping.", max_reviews)
+            break
+
+        # rate limit between reviews
+        time.sleep(2)
 
     # final summary
     rate = total_parse_success / max(total_parse_attempts, 1) * 100
@@ -294,12 +321,13 @@ def main():
     parser.add_argument("--input", type=Path, required=True, help="Input JSONL file")
     parser.add_argument("--output", type=Path, required=True, help="Output directory")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "config.yaml")
+    parser.add_argument("--max-reviews", type=int, default=0, help="Max reviews to process (0 = all)")
     args = parser.parse_args()
 
     if not args.input.exists():
         parser.error(f"Input file not found: {args.input}")
 
-    run(args.input, args.output, args.config)
+    run(args.input, args.output, args.config, max_reviews=args.max_reviews)
 
 
 if __name__ == "__main__":
