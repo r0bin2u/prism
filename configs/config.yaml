@@ -21,14 +21,14 @@ llm:
   temperature: 0.7
   batch_save_interval: 100
   runs:
-    - provider: "gemini"
-      model_name: "gemini-2.0-flash"
-      sleep_seconds: 4
-    - provider: "gemini"
-      model_name: "gemini-2.0-flash"
-      sleep_seconds: 4
-    - provider: "groq"
-      model_name: "llama-3.1-70b-versatile"
+    - provider: "zhipu"
+      model_name: "glm-4-flash"
+      sleep_seconds: 1
+    - provider: "siliconflow"
+      model_name: "Qwen/Qwen2.5-7B-Instruct"
+      sleep_seconds: 1
+    - provider: "cerebras"
+      model_name: "qwen-3-235b-a22b-instruct-2507"
       sleep_seconds: 2
 
 training:
@@ -41,8 +41,8 @@ training:
   alpha: 0.7  # human loss weight
   warmup_ratio: 0.1
   early_stopping_patience: 3
-  amp: true
-  amp_dtype: "bfloat16"
+  amp: false
+  amp_dtype: "float32"
   seed: 42
 
 soft_label:

@@ -8,7 +8,7 @@ from transformers import AutoModel, AutoTokenizer
 class ABSAClassifier(nn.Module):
     def __init__(self, model_name="microsoft/deberta-v3-base", num_labels=3):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
         hidden_size = self.encoder.config.hidden_size
         self.classifier = nn.Linear(hidden_size, num_labels)
 

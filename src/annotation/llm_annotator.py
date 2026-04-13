@@ -1,7 +1,13 @@
 """
 LLM offline annotation for reviews.
 Each review gets N annotation runs with per-run provider/model config.
-Supports Google Gemini and Groq (Llama), switchable per run via config.
+
+Supported providers:
+- gemini      (Google Gemini, native SDK, GEMINI_API_KEYS comma-separated)
+- groq        (Groq, OpenAI-compat, GROQ_API_KEY)
+- zhipu       (Zhipu GLM, OpenAI-compat, ZHIPU_API_KEY)
+- siliconflow (SiliconFlow, OpenAI-compat, SILICONFLOW_API_KEY)
+- cerebras    (Cerebras Cloud, OpenAI-compat, CEREBRAS_API_KEY)
 
 Usage:
     python -m src.annotation.llm_annotator \
@@ -64,45 +70,79 @@ class GeminiKeyRotator:
         if not self.keys:
             raise ValueError("Set GEMINI_API_KEYS (comma-separated) or GEMINI_API_KEY env var")
         self._idx = 0
+        self._clients = {}
 
-    def next_key(self):
+    def next_client(self):
         key = self.keys[self._idx % len(self.keys)]
         self._idx += 1
-        return key
+        if key not in self._clients:
+            from google import genai
+            self._clients[key] = genai.Client(api_key=key)
+        return self._clients[key]
 
 
-def call_gemini(client, model, system, user, temperature):
-    import google.generativeai as genai
-    genai.configure(api_key=client.next_key())
-    m = genai.GenerativeModel(model, system_instruction=system)
-    resp = m.generate_content(
-        user,
-        generation_config={"temperature": temperature, "max_output_tokens": 512},
+def call_gemini(rotator, model, system, user, temperature):
+    client = rotator.next_client()
+    resp = client.models.generate_content(
+        model=model,
+        contents=user,
+        config={
+            "system_instruction": system,
+            "temperature": temperature,
+            "max_output_tokens": 512,
+        },
     )
     return resp.text
 
 
-def call_groq(client, model, system, user, temperature):
-    resp = client.chat.completions.create(
-        model=model,
-        max_tokens=512,
-        temperature=temperature,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+def call_openai_compat(client, model, system, user, temperature):
+    resp = client["http"].post(
+        f"{client['base_url']}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {client['api_key']}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+            "max_tokens": 512,
+        },
     )
-    return resp.choices[0].message.content
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
+OPENAI_COMPAT_PROVIDERS = {
+    "groq":        ("https://api.groq.com/openai/v1",      "GROQ_API_KEY"),
+    "zhipu":       ("https://open.bigmodel.cn/api/paas/v4", "ZHIPU_API_KEY"),
+    "siliconflow": ("https://api.siliconflow.cn/v1",       "SILICONFLOW_API_KEY"),
+    "cerebras":    ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY"),
+}
 
 
 def make_client(provider):
     if provider == "gemini":
         return GeminiKeyRotator(), call_gemini
-    elif provider == "groq":
-        from groq import Groq
-        return Groq(), call_groq
-    else:
+    if provider not in OPENAI_COMPAT_PROVIDERS:
         raise ValueError(f"Unknown provider: {provider}")
+
+    import os
+    import httpx
+    base_url, env_var = OPENAI_COMPAT_PROVIDERS[provider]
+    api_key = os.environ.get(env_var)
+    if not api_key:
+        raise ValueError(f"Set {env_var} env var for provider '{provider}'")
+    client = {
+        "http": httpx.Client(timeout=60.0),
+        "base_url": base_url,
+        "api_key": api_key,
+    }
+    return client, call_openai_compat
 
 
 # -- JSON parsing --

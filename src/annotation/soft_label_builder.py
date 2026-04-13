@@ -27,7 +27,7 @@ def sharpen(dist, T):
 def build_soft_labels_from_llm(annotations, config):
     do_sharpen = config["soft_label"]["temperature_sharpening"]
     T = config["soft_label"]["sharpening_T"]
-    num_runs = config["llm"]["num_runs"]
+    num_runs = len(config["llm"]["runs"])
 
     # for diagnostics
     aspect_mention_counts = defaultdict(list)

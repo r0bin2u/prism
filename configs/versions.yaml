@@ -1,13 +1,11 @@
-data:
-  version: "v1.0"
-  changelog: "Initial version: SemEval-2014 dataset"
-  human_labeled_count: 3000
-  created_at: "2026-03-17"
-
-model:
-  version: "v0.0"
-  changelog: "Not trained yet"
-  checkpoint_path: null
-
 api:
-  model_version: "v0.0"
+  model_version: v1.0
+data:
+  changelog: 'Initial version: SemEval-2014 dataset'
+  created_at: '2026-03-17'
+  human_labeled_count: 3000
+  version: v1.0
+model:
+  changelog: DeBERTa-v3 alpha=0.7 best_f1=0.8696
+  checkpoint_path: /home/xie/Desktop/prism/models/best_model
+  version: v1.0

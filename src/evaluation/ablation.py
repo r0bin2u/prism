@@ -86,10 +86,12 @@ def train_one_variant(train_loader, val_loader, config, device, variant_name):
 
     encoder_params = list(model.encoder.parameters())
     classifier_params = list(model.classifier.parameters())
+    base_lr = float(tc["learning_rate"])
+    clf_lr = float(tc["classifier_lr"])
     optimizer = torch.optim.AdamW([
-        {"params": encoder_params, "lr": tc["learning_rate"]},
-        {"params": classifier_params, "lr": tc["classifier_lr"]},
-    ], weight_decay=0.01)
+        {"params": encoder_params, "lr": base_lr},
+        {"params": classifier_params, "lr": clf_lr},
+    ], lr=base_lr, weight_decay=0.01)
 
     total_steps = len(train_loader) * tc["epochs"]
     warmup_steps = int(total_steps * tc["warmup_ratio"])

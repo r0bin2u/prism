@@ -83,6 +83,7 @@ def download_semeval_data(cache_dir: Path) -> dict[str, dict[str, Path]]:
 def parse_semeval_xml(
     xml_path: Path,
     dataset: str,
+    split_name: str,
     valid_aspects: set[str] | None = None,
 ) -> list[dict]:
     """Parse a SemEval-2014 XML file using aspectCategory annotations.
@@ -129,7 +130,7 @@ def parse_semeval_xml(
 
         reviews.append(
             {
-                "review_id": f"semeval_{tag}_{idx:04d}",
+                "review_id": f"semeval_{tag}_{split_name}_{idx:04d}",
                 "text": text,
                 "dataset": dataset,
                 "aspects": aspects,
@@ -307,8 +308,8 @@ def run(config_path: Path) -> None:
     # 2. Parse (category-level)
     all_reviews: list[dict] = []
     for dataset, split_paths in xml_paths.items():
-        for _split_name, xml_path in split_paths.items():
-            reviews = parse_semeval_xml(xml_path, dataset, valid_aspects)
+        for split_name, xml_path in split_paths.items():
+            reviews = parse_semeval_xml(xml_path, dataset, split_name, valid_aspects)
             all_reviews.extend(reviews)
 
     print(f"Parsed {len(all_reviews)} reviews total.")

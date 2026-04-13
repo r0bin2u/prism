@@ -29,7 +29,7 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, amp_dtype=None):
     model.eval()
     correct = 0
     total = 0
@@ -42,7 +42,11 @@ def evaluate(model, dataloader, device):
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["label"].to(device)
 
-            logits = model(input_ids, attention_mask)
+            if amp_dtype is not None:
+                with torch.amp.autocast(device_type="cuda", dtype=amp_dtype):
+                    logits = model(input_ids, attention_mask)
+            else:
+                logits = model(input_ids, attention_mask)
             preds = logits.argmax(dim=-1)
             true_labels = labels.argmax(dim=-1)
 
@@ -83,12 +87,14 @@ def run(config_path: Path):
     val_path = PROJECT_ROOT / "data" / "splits" / "val.jsonl"
 
     train_dataset = ABSADataset(train_paths, tokenizer, max_length=tc["max_length"])
-    # validation uses human labels only, convert to same format on the fly
-    val_soft_path = filtered_dir / "human_soft_labels.jsonl"
-    if val_soft_path.exists():
-        val_dataset = ABSADataset([val_soft_path], tokenizer, max_length=tc["max_length"])
-    else:
-        val_dataset = ABSADataset([val_path], tokenizer, max_length=tc["max_length"])
+
+    # validation: convert val.jsonl to soft label format
+    from src.annotation.soft_label_builder import build_soft_labels_from_human, save_jsonl
+    val_soft_path = filtered_dir / "val_soft_labels.jsonl"
+    if not val_soft_path.exists():
+        val_records = build_soft_labels_from_human(val_path)
+        save_jsonl(val_records, val_soft_path)
+    val_dataset = ABSADataset([val_soft_path], tokenizer, max_length=tc["max_length"])
 
     logger.info("Train samples: %d, Val samples: %d", len(train_dataset), len(val_dataset))
 
@@ -112,10 +118,12 @@ def run(config_path: Path):
     # optimizer: differential learning rate
     encoder_params = list(model.encoder.parameters())
     classifier_params = list(model.classifier.parameters())
+    base_lr = float(tc["learning_rate"])
+    clf_lr = float(tc["classifier_lr"])
     optimizer = torch.optim.AdamW([
-        {"params": encoder_params, "lr": tc["learning_rate"]},
-        {"params": classifier_params, "lr": tc["classifier_lr"]},
-    ], weight_decay=0.01)
+        {"params": encoder_params, "lr": base_lr},
+        {"params": classifier_params, "lr": clf_lr},
+    ], lr=base_lr, weight_decay=0.01)
 
     # scheduler: linear warmup + cosine decay
     total_steps = len(train_loader) * tc["epochs"]
@@ -202,7 +210,7 @@ def run(config_path: Path):
             avg_llm = epoch_losses["llm"] / max(n_batches, 1)
 
             # validation
-            val_metrics = evaluate(model, val_loader, device)
+            val_metrics = evaluate(model, val_loader, device, amp_dtype if use_amp else None)
             val_f1 = val_metrics["macro_f1"]
             val_acc = val_metrics["accuracy"]
 

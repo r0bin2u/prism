@@ -27,7 +27,8 @@ class MixedDistillationLoss(nn.Module):
         # llm part: KL divergence
         if llm_mask.any():
             llm_logits = logits[llm_mask]
-            llm_labels = labels[llm_mask]
+            llm_labels = labels[llm_mask].clamp(min=1e-8)
+            llm_labels = llm_labels / llm_labels.sum(dim=-1, keepdim=True)
             llm_weights = sample_weights[llm_mask]
             student_log_probs = F.log_softmax(llm_logits, dim=-1)
             kl = F.kl_div(student_log_probs, llm_labels, reduction="none").sum(dim=-1)
