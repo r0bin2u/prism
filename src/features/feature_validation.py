@@ -64,29 +64,47 @@ def batch_predict(model, tokenizer, texts, aspects, device, batch_size=64):
     return results
 
 
+def _split_sentences(text):
+    """Split text into sentences. Simple rule-based: split on .!? followed by space or end."""
+    import re
+    sents = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [s.strip() for s in sents if len(s.strip()) > 5]
+
+
 def run_inference_on_reviews(reviews, aspect_list, model, tokenizer, device):
-    """For each review, predict all aspects. Returns reviews enriched with 'aspects' field."""
+    """For each review, split into sentences, predict per-sentence, aggregate by aspect.
+
+    Aggregation: for each aspect, take the sentence with highest confidence.
+    This matches the model's training distribution (short SemEval sentences).
+    """
     all_texts = []
     all_aspects = []
-    review_indices = []
+    all_keys = []  # (review_idx, aspect)
 
     for i, review in enumerate(reviews):
+        sents = _split_sentences(review["text"])
+        if not sents:
+            sents = [review["text"]]
         for asp in aspect_list:
-            all_texts.append(review["text"])
-            all_aspects.append(asp)
-            review_indices.append(i)
+            for sent in sents:
+                all_texts.append(sent)
+                all_aspects.append(asp)
+                all_keys.append((i, asp))
 
+    logger.info("Sentence splitting: %d reviews -> %d (sentence, aspect) pairs", len(reviews), len(all_texts))
     preds = batch_predict(model, tokenizer, all_texts, all_aspects, device)
+
+    # aggregate: for each (review, aspect), keep the prediction with highest confidence
+    best = {}  # (review_idx, aspect) -> pred
+    for key, pred in zip(all_keys, preds):
+        if key not in best or pred["confidence"] > best[key]["confidence"]:
+            best[key] = pred
 
     # group by review
     enriched = []
-    review_preds = defaultdict(list)
-    for idx, pred in zip(review_indices, preds):
-        review_preds[idx].append(pred)
-
     for i, review in enumerate(reviews):
         r = dict(review)
-        r["aspects"] = review_preds.get(i, [])
+        r["aspects"] = [best[(i, asp)] for asp in aspect_list if (i, asp) in best]
         enriched.append(r)
 
     return enriched
@@ -108,7 +126,7 @@ def prepare_experiment_data(reviews, aspect_list, model, tokenizer, device):
 
     for i, r in enumerate(enriched):
         uid = r.get("user_id", "unknown")
-        pid = r.get("product_id", "unknown")
+        pid = r.get("product_id", r.get("parent_asin", "unknown"))
         rating = r.get("rating", 3.0)
         ts = r.get("timestamp", 0)
 
@@ -643,7 +661,7 @@ def run(amazon_data_path, checkpoint_path, config_path, output_dir, max_reviews=
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    aspect_list = config["aspects"]["general"]
+    aspect_list = config["aspects"].get("restaurant", config["aspects"]["general"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # load model

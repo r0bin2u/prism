@@ -99,7 +99,7 @@ def filter_reviews_by_ids(reviews, ids):
 
 def save_selected(reviews, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         for r in reviews:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
@@ -122,7 +122,7 @@ def run_selection(model_path, unlabeled_path, output_dir, config_path, budget, s
     model.load_state_dict(state_dict)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    aspect_list = config["aspects"]["general"]
+    aspect_list = config["aspects"].get("restaurant", config["aspects"]["general"])
 
     # load unlabeled data
     reviews = []
@@ -196,7 +196,7 @@ def run_comparison(model_path, unlabeled_path, config_path, budget):
     model.load_state_dict(state_dict)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    aspect_list = config["aspects"]["general"]
+    aspect_list = config["aspects"].get("restaurant", config["aspects"]["general"])
 
     reviews = []
     with open(unlabeled_path) as f:

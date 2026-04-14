@@ -27,9 +27,9 @@ llm:
     - provider: "siliconflow"
       model_name: "Qwen/Qwen2.5-7B-Instruct"
       sleep_seconds: 1
-    - provider: "cerebras"
-      model_name: "qwen-3-235b-a22b-instruct-2507"
-      sleep_seconds: 2
+    - provider: "zhipu"
+      model_name: "glm-4-flash"
+      sleep_seconds: 1
 
 training:
   model_name: "microsoft/deberta-v3-base"
