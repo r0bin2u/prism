@@ -35,8 +35,17 @@ data/
 models/
 results/
 
+# Personal notes and scratch work
+HANDOFF.md
+notes/
+notebooks/
+
+# Experiment tracking
+mlruns/
+
 # Logs
 *.log
+logs/
 
 # Coverage & testing
 .coverage
