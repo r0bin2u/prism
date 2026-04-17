@@ -2,11 +2,17 @@
 __pycache__/
 *.pyc
 .git/
+.gitignore
 data/
 models/
 results/
 mlruns/
 notes/
+notebooks/
+logs/
+*.log
+HANDOFF.md
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.github/
