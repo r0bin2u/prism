@@ -2,6 +2,19 @@
 
 Aspect-based sentiment analysis for restaurant reviews. Uses multi-LLM ensemble annotation and distills the knowledge into a DeBERTa model for fast inference.
 
+## Business analogy
+
+Imagine an e-commerce platform that gets millions of product reviews per day. A review like *"Camera is great but battery dies in 3 hours and customer service was rude"* is not just "negative". It contains three different opinions on three different things.
+
+Prism is the engine that turns such unstructured reviews into structured signals. Concrete use cases it maps to:
+
+- **Product page "pros & cons" summary**: auto-generate "users say the camera is great (94%) but complain about battery (67%) and service (58%)" from raw reviews.
+- **Recommendation personalization**: a user who cares about *battery* should see products with high battery-positive ratio, regardless of overall rating.
+- **Review moderation / risk alerts**: when the *service* aspect suddenly gets 30% more negatives in 24 hours, page the on-call team before customer complaints surface.
+- **Customer support ticket routing**: auto-tag incoming complaints by aspect and route to the right team (fulfillment vs product quality vs CS training).
+
+The underlying hard problem is always the same: **"given a piece of unstructured user text, extract fine-grained structured signals in real time at low cost."** Restaurant ABSA is the sandbox I used to validate this pipeline. The same approach transfers to any domain with user-generated text.
+
 ## What it does
 
 Given a restaurant review, predicts sentiment for each aspect (food / service / ambience / price / anecdotes).
